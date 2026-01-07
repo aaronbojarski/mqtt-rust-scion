@@ -1,8 +1,9 @@
-pub mod connection;
+pub mod connection_mode_quic;
+pub mod connection_mode_udp;
 
 use std::collections::HashMap;
 use std::fs;
-use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
@@ -16,7 +17,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::net::UdpPacket;
 use crate::net::quic::MAX_DATAGRAM_SIZE;
-use crate::proxy::connection::{Config, Connection};
+use crate::proxy::connection_mode_quic::{Config, Connection};
 
 const TOKEN_PREFIX: &[u8] = b"mqtt-rust-scion";
 const HMAC_TAG_LEN: usize = 32;
@@ -30,6 +31,24 @@ struct ConnectionInfo {
     pub cancel_token: CancellationToken,
 }
 
+#[derive(Clone, Debug)]
+pub enum Mode {
+    QuicEndpoint,
+    UdpEndpoint,
+}
+
+impl FromStr for Mode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "QuicEndpoint" => Ok(Mode::QuicEndpoint),
+            "UdpEndpoint" => Ok(Mode::UdpEndpoint),
+            _ => Err(anyhow!("invalid mode: {}", s)),
+        }
+    }
+}
+
 pub struct ProxyConfig {
     pub listen: scion_proto::address::SocketAddr,
     pub endhost_api_address: Option<url::Url>,
@@ -38,6 +57,8 @@ pub struct ProxyConfig {
     pub ca_cert_path: std::path::PathBuf,
     pub cert_path: std::path::PathBuf,
     pub key_path: std::path::PathBuf,
+    pub mode: Mode,
+    pub mqtt_broker_address: std::net::SocketAddr,
 }
 
 pub struct Proxy {
@@ -45,6 +66,7 @@ pub struct Proxy {
     quic_config: quiche::Config,
     token_key: ring::hmac::Key,
     conn_id_seed: ring::hmac::Key,
+    new_connections: Arc<Mutex<HashMap<scion_proto::address::SocketAddr, ConnectionInfo>>>,
     connections: Arc<Mutex<HashMap<quiche::ConnectionId<'static>, ConnectionInfo>>>,
 }
 
@@ -62,6 +84,7 @@ impl Proxy {
                 .unwrap(),
             conn_id_seed: ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &SystemRandom::new())
                 .unwrap(),
+            new_connections: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -134,7 +157,15 @@ impl Proxy {
                         }
                     };
                     debug!("received {} bytes on socket from {}", len, src);
-                    self.handle_udp_packet(&mut buf[..len], src_ip_addr, src, local_addr, local_scion_addr, &tx_quic_to_udp).await?;
+                    match self.config.mode {
+                        Mode::QuicEndpoint => {
+                            self.handle_udp_packet_mode_quic(&mut buf[..len], src_ip_addr, src, local_addr, local_scion_addr, &tx_quic_to_udp).await?;
+                        }
+                        Mode::UdpEndpoint => {
+                            // In UdpEndpoint mode, we forward QUIC packets to the MQTT broker over UDP/IP
+                            self.handle_udp_packet_mode_udp(&mut buf[..len], src, local_scion_addr, &tx_quic_to_udp).await?;
+                        }
+                    }
                 }
 
                 // Send QUIC packets over UDP socket
@@ -146,7 +177,7 @@ impl Proxy {
         }
     }
 
-    async fn handle_udp_packet(
+    async fn handle_udp_packet_mode_quic(
         &mut self,
         buf: &mut [u8],
         src_ip_socket: std::net::SocketAddr,
@@ -337,6 +368,7 @@ impl Proxy {
             let config = Config {
                 local_isd_as: local_scion_socket.isd_asn(),
                 remote_isd_as: src_scion_socket.isd_asn(),
+                mqtt_broker_address: self.config.mqtt_broker_address,
             };
 
             // Store connection info
@@ -374,7 +406,119 @@ impl Proxy {
         Ok(())
     }
 
-    fn mint_token(&self, hdr: &quiche::Header, src: &SocketAddr) -> Vec<u8> {
+    async fn handle_udp_packet_mode_udp(
+        &mut self,
+        buf: &mut [u8],
+        src_scion_socket: scion_proto::address::SocketAddr,
+        local_scion_socket: scion_proto::address::SocketAddr,
+        tx_quic_to_udp: &mpsc::Sender<UdpPacket>,
+    ) -> Result<()> {
+        // Parse the QUIC packet header to identify connection
+        let hdr = match quiche::Header::from_slice(buf, quiche::MAX_CONN_ID_LEN) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("failed to parse header: {:?}", e);
+                return Ok(());
+            }
+        };
+
+        // Check if this is an existing connection (by dcid or src socket_addr)
+        // For initial packets, we only add new connections based on source socket_addr
+        // For subsequent packets, check if the connection exists by dcid, if not by source socket_addr
+        // If does not exist by dcid, but by source socket_addr, we update the mapping to use dcid. At that point onwards, we only use dcid to identify the connection.
+
+        let client_conn_sender = {
+            let connections_lock = self.connections.lock().await;
+            connections_lock.get(&hdr.dcid).cloned()
+        };
+
+        let client_conn_sender = if client_conn_sender.is_none() {
+            let mut connections_lock = self.new_connections.lock().await;
+            let connection_info = connections_lock.get(&src_scion_socket).cloned();
+            connections_lock.remove(&src_scion_socket);
+            if let Some(conn) = connection_info.clone() {
+                let mut connections_lock = self.connections.lock().await;
+                connections_lock.insert(hdr.dcid.clone(), conn);
+            }
+            connection_info
+        } else {
+            client_conn_sender
+        };
+
+        if let Some(client_conn) = client_conn_sender {
+            // Forward to existing connection task
+            match client_conn.sender.try_send(UdpPacket {
+                data: buf.to_vec(),
+                src: src_scion_socket,
+                dst: local_scion_socket,
+            }) {
+                Ok(_) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    debug!(
+                        "Connection channel full, dropping packet for connection {:?}",
+                        hdr.dcid
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to send packet to connection {:?}: {}, shutting down",
+                        hdr.dcid, e
+                    );
+                    client_conn.cancel_token.cancel();
+                }
+            }
+        } else if hdr.ty == quiche::Type::Initial {
+            // Create cancellation token for clean shutdown
+            let cancel_token = CancellationToken::new();
+
+            // Create channel for this connection
+            let (tx_to_connection, rx_from_main) =
+                mpsc::channel::<UdpPacket>(CLIENT_CHANNEL_CAPACITY);
+
+            let config = crate::proxy::connection_mode_udp::Config {
+                local_proxy_addr: local_scion_socket,
+                remote_client_addr: src_scion_socket,
+                mqtt_broker_address: self.config.mqtt_broker_address,
+            };
+
+            // Store connection info
+            let mut client_conn = crate::proxy::connection_mode_udp::Connection::new(
+                config,
+                rx_from_main,
+                tx_quic_to_udp.clone(),
+                cancel_token.clone(),
+            );
+            self.new_connections.lock().await.insert(
+                src_scion_socket,
+                ConnectionInfo {
+                    sender: tx_to_connection,
+                    cancel_token,
+                },
+            );
+
+            // Spawn task for this connection
+            let scid_owned = hdr.dcid.clone().into_owned();
+            let connections_clone = self.connections.clone();
+            tokio::spawn(async move {
+                if let Err(e) = client_conn
+                    .handle_client_connection()
+                    .instrument(tracing::info_span!("connection", scid = ?scid_owned))
+                    .await
+                {
+                    error!("connection {:?} error: {:?}", scid_owned, e);
+                }
+                connections_clone.lock().await.remove(&scid_owned);
+            });
+        } else {
+            debug!(
+                "packet for unknown connection with dcid {:?} and src {:?}",
+                hdr.dcid, src_scion_socket
+            );
+        }
+        Ok(())
+    }
+
+    fn mint_token(&self, hdr: &quiche::Header, src: &std::net::SocketAddr) -> Vec<u8> {
         let mut token = Vec::new();
 
         token.extend_from_slice(TOKEN_PREFIX);
@@ -395,7 +539,7 @@ impl Proxy {
 
     fn validate_token<'a>(
         &self,
-        src: &SocketAddr,
+        src: &std::net::SocketAddr,
         token: &'a [u8],
     ) -> Option<quiche::ConnectionId<'a>> {
         if token.len() < TOKEN_PREFIX.len() {

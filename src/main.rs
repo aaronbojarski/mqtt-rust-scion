@@ -53,6 +53,14 @@ struct ProxyOpt {
     #[clap(long = "key", value_name = "FILE", default_value = "proxy-key.pem")]
     key_path: PathBuf,
 
+    /// Proxy operation mode: QuicEndpoint or UdpEndpoint
+    #[clap(long = "mode", default_value = "QuicEndpoint")]
+    mode: mqtt_rust_scion::proxy::Mode,
+
+    /// Address of the MQTT broker to forward traffic to
+    #[clap(long = "mqtt-broker", default_value = "127.0.0.1:1883")]
+    mqtt_broker_address: core::net::SocketAddr,
+
     /// Tracing level (trace, debug, info, warn, error)
     #[clap(long = "log", default_value = "info")]
     log_level: tracing::Level,
@@ -126,6 +134,8 @@ async fn run_proxy(opt: ProxyOpt) -> Result<(), anyhow::Error> {
         ca_cert_path: opt.ca_cert_path,
         cert_path: opt.cert_path,
         key_path: opt.key_path,
+        mode: opt.mode,
+        mqtt_broker_address: opt.mqtt_broker_address,
     };
     let mut proxy = mqtt_rust_scion::proxy::Proxy::new(config)?;
     proxy.run().await?;

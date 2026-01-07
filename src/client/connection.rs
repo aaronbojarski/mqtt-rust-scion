@@ -10,7 +10,6 @@ use crate::client::MAX_DATAGRAM_SIZE;
 use crate::net::UdpPacket;
 use crate::net::quic::{DEFAULT_TIMEOUT, KEEPALIVE_INTERVAL};
 
-const RCV_MANY_CAPACITY: usize = 10; // number of packets
 const PUBLISH_INTERVAL: u64 = 5000; // in milliseconds
 
 pub struct Config {
@@ -97,14 +96,11 @@ impl Connection {
             })
             .await?;
 
-        let mut udp_packet_buf: Vec<UdpPacket> = Vec::with_capacity(RCV_MANY_CAPACITY); // buffer for incoming UDP packets. Used for processing multiple packets at once.
-
         let mut publish_interval =
             tokio::time::interval(std::time::Duration::from_millis(PUBLISH_INTERVAL));
         let mut keepalive_interval =
             tokio::time::interval(std::time::Duration::from_millis(KEEPALIVE_INTERVAL));
         loop {
-            udp_packet_buf.clear();
             let timeout = self
                 .conn
                 .timeout()
@@ -125,10 +121,18 @@ impl Connection {
                     }
                 }
 
-                // Incoming UDP packets (QUIC protocol packets)
-                num_packets = self.rx_udp_to_quic.recv_many(&mut udp_packet_buf, RCV_MANY_CAPACITY) => {
-                    self.process_udp_packets(&mut udp_packet_buf, num_packets).await?;
+                // Handle incoming UDP packets
+                packet = self.rx_udp_to_quic.recv() => {
+                    let packet = match packet {
+                        Some(pkt) => pkt,
+                        None => {
+                            warn!("UDP to QUIC channel closed");
+                            break;
+                        }
+                    };
+                    self.process_udp_packet(packet).await?;
                 }
+
 
                 _ = publish_interval.tick() => {
                     if self.conn.is_established() {
@@ -217,26 +221,20 @@ impl Connection {
         Ok(())
     }
 
-    async fn process_udp_packets(
-        &mut self,
-        packet_buf: &mut [UdpPacket],
-        num_packets: usize,
-    ) -> Result<()> {
+    async fn process_udp_packet(&mut self, mut packet: UdpPacket) -> Result<()> {
         let mut buf = [0; MAX_DATAGRAM_SIZE];
-        for packet in packet_buf.iter_mut().take(num_packets) {
-            let recv_info = quiche::RecvInfo {
-                from: packet
-                    .src
-                    .local_address()
-                    .ok_or_else(|| anyhow!("invalid src address"))?,
-                to: packet
-                    .dst
-                    .local_address()
-                    .ok_or_else(|| anyhow!("invalid dst address"))?,
-            };
+        let recv_info = quiche::RecvInfo {
+            from: packet
+                .src
+                .local_address()
+                .ok_or_else(|| anyhow!("invalid src address"))?,
+            to: packet
+                .dst
+                .local_address()
+                .ok_or_else(|| anyhow!("invalid dst address"))?,
+        };
 
-            self.conn.recv(&mut packet.data, recv_info)?;
-        }
+        self.conn.recv(&mut packet.data, recv_info)?;
 
         if self.conn.is_established() && !self.mqtt_init_sent {
             // Send MQTT CONNECT packet

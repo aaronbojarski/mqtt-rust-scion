@@ -8,11 +8,10 @@ use tracing::{debug, error, info, trace, warn};
 use crate::net::UdpPacket;
 use crate::net::quic::{DEFAULT_TIMEOUT, KEEPALIVE_INTERVAL, MAX_DATAGRAM_SIZE};
 
-const RCV_MANY_CAPACITY: usize = 10; // number of packets to receive at once
-
 pub struct Config {
     pub local_isd_as: IsdAsn,
     pub remote_isd_as: IsdAsn,
+    pub mqtt_broker_address: std::net::SocketAddr,
 }
 
 pub struct Connection {
@@ -73,18 +72,13 @@ impl Connection {
             self.tx_quic_to_udp.send(packet).await?;
         }
 
-        let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:1883").await?;
+        let tcp_stream = tokio::net::TcpStream::connect(self.config.mqtt_broker_address).await?;
         self.tcp_stream = Some(tcp_stream);
 
-        // Create cancellation token for clean shutdown
-        let cancel_token = CancellationToken::new();
-
-        let mut udp_packet_buf: Vec<UdpPacket> = Vec::with_capacity(RCV_MANY_CAPACITY); // buffer for incoming UDP packets. Used for processing multiple packets at once.
         let mut keepalive_interval =
             tokio::time::interval(std::time::Duration::from_millis(KEEPALIVE_INTERVAL));
 
         loop {
-            udp_packet_buf.clear();
             let timeout = self
                 .conn
                 .timeout()
@@ -105,8 +99,15 @@ impl Connection {
                 }
 
                 // Handle incoming UDP packets
-                num_packets = self.rx_udp_to_quic.recv_many(&mut udp_packet_buf, RCV_MANY_CAPACITY) => {
-                    self.process_udp_packets(&mut udp_packet_buf, num_packets).await?;
+                packet = self.rx_udp_to_quic.recv() => {
+                    let packet = match packet {
+                        Some(pkt) => pkt,
+                        None => {
+                            warn!("UDP to QUIC channel closed");
+                            break;
+                        }
+                    };
+                    self.process_udp_packet(packet).await?;
                 }
 
                 // Handle data from TCP stream
@@ -190,37 +191,25 @@ impl Connection {
             }
         }
 
-        info!("connection handler exiting, stopping TUN interface",);
-        cancel_token.cancel();
-
         Ok(())
     }
 
-    async fn process_udp_packets(
-        &mut self,
-        packet_buf: &mut [UdpPacket],
-        num_packets: usize,
-    ) -> Result<()> {
-        for packet in packet_buf.iter_mut().take(num_packets) {
-            let src_ip_addr = packet
-                .src
-                .local_address()
-                .ok_or_else(|| anyhow!("Invalid src address."))?;
-            let dst_ip_addr = packet
-                .dst
-                .local_address()
-                .ok_or_else(|| anyhow!("Invalid dst address."))?;
-            let recv_info = quiche::RecvInfo {
-                from: src_ip_addr,
-                to: dst_ip_addr,
-            };
+    async fn process_udp_packet(&mut self, mut packet: UdpPacket) -> Result<()> {
+        let src_ip_addr = packet
+            .src
+            .local_address()
+            .ok_or_else(|| anyhow!("Invalid src address."))?;
+        let dst_ip_addr = packet
+            .dst
+            .local_address()
+            .ok_or_else(|| anyhow!("Invalid dst address."))?;
+        let recv_info = quiche::RecvInfo {
+            from: src_ip_addr,
+            to: dst_ip_addr,
+        };
 
-            // Process the packet
-            if let Err(e) = self.conn.recv(&mut packet.data, recv_info) {
-                error!("recv failed: {:?}, recv_info: {:?}", e, recv_info);
-                continue;
-            }
-        }
+        // Process the packet
+        self.conn.recv(&mut packet.data, recv_info)?;
 
         // Quiche checks if a provided certificate is valid and aborts if not. However, we need to check if the peer provided one at all.
         if self.conn.peer_cert().is_none() {
