@@ -70,17 +70,15 @@ impl Client {
         }
         let client_network_stack = builder.build().await?;
 
-        // When using SNAP, we will get an address assigned.
         let local_ias = client_network_stack.local_ases();
-
-        if let Some(bind) = &self.config.bind {
-            if !local_ias.contains(&bind.isd_asn()) {
-                anyhow::bail!(
-                    "configured bind ISD-AS {} is not among the local ASes of the SCION stack: {:?}",
-                    bind.isd_asn(),
-                    local_ias
-                );
-            }
+        if let Some(bind) = &self.config.bind
+            && !local_ias.contains(&bind.isd_asn())
+        {
+            anyhow::bail!(
+                "configured bind ISD-AS {} is not among the local ASes of the SCION stack: {:?}",
+                bind.isd_asn(),
+                local_ias
+            );
         }
 
         let mut socket_config = scion_stack::scionstack::SocketConfig::new();

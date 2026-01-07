@@ -422,9 +422,16 @@ impl Proxy {
             }
         };
 
+        let connection_id = if hdr.ty == quiche::Type::Short {
+            // For short header packets, we only use first 8 bytes of dcid as identifier
+            quiche::ConnectionId::from_vec(hdr.dcid[..8].to_vec())
+        } else {
+            hdr.dcid.clone()
+        };
+
         debug!(
-            "Received packet for connection with dcid {:?} from {:?}",
-            hdr.dcid, src_scion_socket
+            "Received packet for connection identifier {:?} from {}",
+            connection_id, src_scion_socket
         );
 
         // Check if this is an existing connection (by dcid or src socket_addr)
@@ -434,27 +441,28 @@ impl Proxy {
 
         let client_conn_sender = {
             let connections_lock = self.connections.lock().await;
-            connections_lock.get(&hdr.dcid).cloned()
+            connections_lock.get(&connection_id).cloned()
         };
 
         let client_conn_sender = if client_conn_sender.is_none() {
-            let mut connections_lock = self.new_connections.lock().await;
-            let connection_info = connections_lock.get(&src_scion_socket).cloned();
-            // connections_lock.remove(&src_scion_socket);
-            if let Some(conn) = connection_info.clone() {
+            let mut new_connections_lock = self.new_connections.lock().await;
+            let connection_info = new_connections_lock.get(&src_scion_socket).cloned();
+            if let Some(conn) = connection_info.clone()
+                && connection_id.len() == 8
+            {
                 debug!(
-                    "Updating connection mapping from src_scion_socket to dcid: {:?} -> {:?}",
-                    src_scion_socket, hdr.dcid
+                    "Updating connection mapping from src_scion_socket to connection identifier: {:?} -> {:?}",
+                    src_scion_socket, connection_id
                 );
+                new_connections_lock.remove(&src_scion_socket);
+
                 let mut connections_lock = self.connections.lock().await;
-                connections_lock.insert(hdr.dcid.clone(), conn);
+                connections_lock.insert(connection_id, conn);
             }
             connection_info
         } else {
             client_conn_sender
         };
-
-        debug!("Connection lookup result: {:?}", client_conn_sender);
 
         if let Some(client_conn) = client_conn_sender {
             // Forward to existing connection task

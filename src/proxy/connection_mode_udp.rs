@@ -44,7 +44,6 @@ impl Connection {
         self.udp_socket = Some(udp_socket);
 
         loop {
-            // TODO: Add timer that fires if nothing happens for TIMEOUT duration
             let timeout = std::time::Duration::from_millis(TIMEOUT);
             tokio::select! {
                 // Handle connection timeout
