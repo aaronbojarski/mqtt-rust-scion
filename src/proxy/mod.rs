@@ -25,7 +25,7 @@ const MAIN_CHANNEL_CAPACITY: usize = 10000;
 const CLIENT_CHANNEL_CAPACITY: usize = 200;
 const UDP_PACKET_BUFFER_SIZE: usize = 65535;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ConnectionInfo {
     pub sender: mpsc::Sender<UdpPacket>,
     pub cancel_token: CancellationToken,
@@ -422,6 +422,11 @@ impl Proxy {
             }
         };
 
+        debug!(
+            "Received packet for connection with dcid {:?} from {:?}",
+            hdr.dcid, src_scion_socket
+        );
+
         // Check if this is an existing connection (by dcid or src socket_addr)
         // For initial packets, we only add new connections based on source socket_addr
         // For subsequent packets, check if the connection exists by dcid, if not by source socket_addr
@@ -435,8 +440,12 @@ impl Proxy {
         let client_conn_sender = if client_conn_sender.is_none() {
             let mut connections_lock = self.new_connections.lock().await;
             let connection_info = connections_lock.get(&src_scion_socket).cloned();
-            connections_lock.remove(&src_scion_socket);
+            // connections_lock.remove(&src_scion_socket);
             if let Some(conn) = connection_info.clone() {
+                debug!(
+                    "Updating connection mapping from src_scion_socket to dcid: {:?} -> {:?}",
+                    src_scion_socket, hdr.dcid
+                );
                 let mut connections_lock = self.connections.lock().await;
                 connections_lock.insert(hdr.dcid.clone(), conn);
             }
@@ -444,6 +453,8 @@ impl Proxy {
         } else {
             client_conn_sender
         };
+
+        debug!("Connection lookup result: {:?}", client_conn_sender);
 
         if let Some(client_conn) = client_conn_sender {
             // Forward to existing connection task

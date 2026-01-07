@@ -5,6 +5,8 @@ pub const MAX_DATAGRAM_SIZE: usize = 1200;
 pub const KEEPALIVE_INTERVAL: u64 = 5000; // in milliseconds
 pub const DEFAULT_TIMEOUT: u64 = 30_000; // in milliseconds
 
+pub const PROTOCOL: &[&[u8]] = &[b"mqtt"];
+
 pub fn configure_quic(
     ca_cert_path: &std::path::Path,
     cert_path: &std::path::Path,
@@ -33,7 +35,7 @@ pub fn configure_quic(
             .ok_or_else(|| anyhow!("Invalid CA certificate path"))?,
     )?;
 
-    config.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
+    config.set_application_protos(PROTOCOL)?;
     config.set_max_idle_timeout(DEFAULT_TIMEOUT);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
