@@ -72,8 +72,25 @@ impl Connection {
             self.tx_quic_to_udp.send(packet).await?;
         }
 
-        let tcp_stream = tokio::net::TcpStream::connect(self.config.mqtt_broker_address).await?;
-        self.tcp_stream = Some(tcp_stream);
+        self.tcp_stream =
+            match tokio::net::TcpStream::connect(self.config.mqtt_broker_address).await {
+                Ok(stream) => {
+                    info!(
+                        "connected to MQTT broker at {}",
+                        self.config.mqtt_broker_address
+                    );
+                    Some(stream)
+                }
+                Err(e) => {
+                    error!(
+                        "failed to connect to MQTT broker at {}: {}",
+                        self.config.mqtt_broker_address, e
+                    );
+                    self.conn
+                        .close(true, 0x102, b"failed to connect to MQTT broker")?;
+                    None
+                }
+            };
 
         let mut keepalive_interval =
             tokio::time::interval(std::time::Duration::from_millis(KEEPALIVE_INTERVAL));
@@ -111,14 +128,20 @@ impl Connection {
                 }
 
                 // Handle data from TCP stream
-                result = self.tcp_stream.as_mut().unwrap().readable() => {
+                result = async {
+                    if let Some(ref tcp_stream) = self.tcp_stream {
+                        tcp_stream.readable().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
                     match result {
                         Ok(_) => {
                             let mut tcp_buf = [0; MAX_DATAGRAM_SIZE];
                             match self.tcp_stream.as_mut().unwrap().try_read(&mut tcp_buf) {
                                 Ok(0) => {
-                                    info!("TCP stream closed by peer");
-                                    break;
+                                    debug!("TCP stream closed by peer");
+                                    self.conn.close(true, 0x101, b"TCP stream to broker closed by peer")?;
                                 }
                                 Ok(n) => {
                                     self.conn.stream_send(0, &tcp_buf[..n], false)?;
@@ -129,13 +152,13 @@ impl Connection {
                                 }
                                 Err(e) => {
                                     error!("Failed to read from TCP stream: {}", e);
-                                    break;
+                                    self.conn.close(true, 0x101, b"Failed to read from TCP stream to broker")?;
                                 }
                             }
                         }
                         Err(e) => {
                             error!("TCP stream error: {}", e);
-                            break;
+                            self.conn.close(true, 0x101, b"TCP stream to broker error")?;
                         }
                     }
                 }

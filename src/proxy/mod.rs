@@ -66,8 +66,8 @@ pub struct Proxy {
     quic_config: quiche::Config,
     token_key: ring::hmac::Key,
     conn_id_seed: ring::hmac::Key,
-    new_connections: Arc<Mutex<HashMap<scion_proto::address::SocketAddr, ConnectionInfo>>>,
-    connections: Arc<Mutex<HashMap<quiche::ConnectionId<'static>, ConnectionInfo>>>,
+    udp_connections: Arc<Mutex<HashMap<scion_proto::address::SocketAddr, ConnectionInfo>>>,
+    quic_connections: Arc<Mutex<HashMap<quiche::ConnectionId<'static>, ConnectionInfo>>>,
 }
 
 impl Proxy {
@@ -84,8 +84,8 @@ impl Proxy {
                 .unwrap(),
             conn_id_seed: ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &SystemRandom::new())
                 .unwrap(),
-            new_connections: Arc::new(Mutex::new(HashMap::new())),
-            connections: Arc::new(Mutex::new(HashMap::new())),
+            udp_connections: Arc::new(Mutex::new(HashMap::new())),
+            quic_connections: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -147,26 +147,26 @@ impl Proxy {
         // Main loop: handle UDP socket
         loop {
             tokio::select! {
-                // Receive datagram from UDP socket
-                Ok((len, src)) = socket.recv_from(&mut buf) => {
-                    let src_ip_addr = match src.local_address() {
-                        Some(addr) => addr,
-                        None => {
-                            warn!("Could not get source IP address from SCION SocketAddr.");
-                            continue;
-                        }
-                    };
-                    debug!("received {} bytes on socket from {}", len, src);
-                    match self.config.mode {
-                        Mode::QuicEndpoint => {
-                            self.handle_udp_packet_mode_quic(&mut buf[..len], src_ip_addr, src, local_addr, local_scion_addr, &tx_quic_to_udp).await?;
-                        }
-                        Mode::UdpEndpoint => {
-                            // In UdpEndpoint mode, we forward QUIC packets to the MQTT broker over UDP/IP
-                            self.handle_udp_packet_mode_udp(&mut buf[..len], src, local_scion_addr, &tx_quic_to_udp).await?;
-                        }
+            // Receive datagram from UDP socket
+            Ok((len, src)) = socket.recv_from(&mut buf) => {
+                let src_ip_addr = match src.local_address() {
+                    Some(addr) => addr,
+                    None => {
+                        warn!("Could not get source IP address from SCION SocketAddr.");
+                        continue;
+                    }
+                };
+                debug!("received {} bytes on socket from {}", len, src);
+                match self.config.mode {
+                    Mode::QuicEndpoint => {
+                        self.handle_udp_packet_mode_quic(&mut buf[..len], src_ip_addr, src, local_addr, local_scion_addr, &tx_quic_to_udp).await?;
+                    }
+                    Mode::UdpEndpoint => {
+                        // In UdpEndpoint mode, we forward QUIC packets to the MQTT broker over UDP/IP
+                        self.handle_udp_packet_mode_udp(&mut buf[..len], src, local_scion_addr, &tx_quic_to_udp).await?;
                     }
                 }
+            }
 
                 // Send QUIC packets over UDP socket
                 Some(packet_data) = rx_quic_to_udp.recv() => {
@@ -201,7 +201,7 @@ impl Proxy {
 
         // Check if this is an existing connection (by dcid or derived conn_id)
         let client_conn_sender = {
-            let connections_lock = self.connections.lock().await;
+            let connections_lock = self.quic_connections.lock().await;
             connections_lock
                 .get(&hdr.dcid)
                 .or_else(|| connections_lock.get(&conn_id))
@@ -379,7 +379,7 @@ impl Proxy {
                 tx_quic_to_udp.clone(),
                 cancel_token.clone(),
             );
-            self.connections.lock().await.insert(
+            self.quic_connections.lock().await.insert(
                 scid.clone().into_owned(),
                 ConnectionInfo {
                     sender: tx_to_connection,
@@ -389,7 +389,7 @@ impl Proxy {
 
             // Spawn task for this connection
             let scid_owned = scid.clone().into_owned();
-            let connections_clone = self.connections.clone();
+            let connections_clone = self.quic_connections.clone();
             tokio::spawn(async move {
                 if let Err(e) = client_conn
                     .handle_client_connection()
@@ -413,58 +413,13 @@ impl Proxy {
         local_scion_socket: scion_proto::address::SocketAddr,
         tx_quic_to_udp: &mpsc::Sender<UdpPacket>,
     ) -> Result<()> {
-        // Parse the QUIC packet header to identify connection
-        let hdr = match quiche::Header::from_slice(buf, quiche::MAX_CONN_ID_LEN) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("failed to parse header: {:?}", e);
-                return Ok(());
-            }
-        };
-
-        let connection_id = if hdr.ty == quiche::Type::Short {
-            // For short header packets, we only use first 8 bytes of dcid as identifier
-            quiche::ConnectionId::from_vec(hdr.dcid[..8].to_vec())
-        } else {
-            hdr.dcid.clone()
-        };
-
-        debug!(
-            "Received packet for connection identifier {:?} from {}",
-            connection_id, src_scion_socket
-        );
-
-        // Check if this is an existing connection (by dcid or src socket_addr)
-        // For initial packets, we only add new connections based on source socket_addr
-        // For subsequent packets, check if the connection exists by dcid, if not by source socket_addr
-        // If does not exist by dcid, but by source socket_addr, we update the mapping to use dcid. At that point onwards, we only use dcid to identify the connection.
-
-        let client_conn_sender = {
-            let connections_lock = self.connections.lock().await;
-            connections_lock.get(&connection_id).cloned()
-        };
-
-        let client_conn_sender = if client_conn_sender.is_none() {
-            let mut new_connections_lock = self.new_connections.lock().await;
+        let mut client_conn_sender = {
+            let new_connections_lock = self.udp_connections.lock().await;
             let connection_info = new_connections_lock.get(&src_scion_socket).cloned();
-            if let Some(conn) = connection_info.clone()
-                && connection_id.len() == 8
-            {
-                debug!(
-                    "Updating connection mapping from src_scion_socket to connection identifier: {:?} -> {:?}",
-                    src_scion_socket, connection_id
-                );
-                new_connections_lock.remove(&src_scion_socket);
-
-                let mut connections_lock = self.connections.lock().await;
-                connections_lock.insert(connection_id, conn);
-            }
             connection_info
-        } else {
-            client_conn_sender
         };
 
-        if let Some(client_conn) = client_conn_sender {
+        if let Some(client_conn) = client_conn_sender.as_mut() {
             // Forward to existing connection task
             match client_conn.sender.try_send(UdpPacket {
                 data: buf.to_vec(),
@@ -475,18 +430,23 @@ impl Proxy {
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     debug!(
                         "Connection channel full, dropping packet for connection {:?}",
-                        hdr.dcid
+                        src_scion_socket
                     );
                 }
                 Err(e) => {
                     warn!(
                         "Failed to send packet to connection {:?}: {}, shutting down",
-                        hdr.dcid, e
+                        src_scion_socket, e
                     );
                     client_conn.cancel_token.cancel();
                 }
             }
-        } else if hdr.ty == quiche::Type::Initial {
+        } else {
+            debug!(
+                "Creating new UDP connection for source {:?}",
+                src_scion_socket
+            );
+
             // Create cancellation token for clean shutdown
             let cancel_token = CancellationToken::new();
 
@@ -507,7 +467,7 @@ impl Proxy {
                 tx_quic_to_udp.clone(),
                 cancel_token.clone(),
             );
-            self.new_connections.lock().await.insert(
+            self.udp_connections.lock().await.insert(
                 src_scion_socket,
                 ConnectionInfo {
                     sender: tx_to_connection,
@@ -516,23 +476,17 @@ impl Proxy {
             );
 
             // Spawn task for this connection
-            let scid_owned = hdr.dcid.clone().into_owned();
-            let connections_clone = self.connections.clone();
+            let connections_clone = self.udp_connections.clone();
             tokio::spawn(async move {
                 if let Err(e) = client_conn
                     .handle_client_connection()
-                    .instrument(tracing::info_span!("connection", scid = ?scid_owned))
+                    .instrument(tracing::info_span!("connection", src = ?src_scion_socket))
                     .await
                 {
-                    error!("connection {:?} error: {:?}", scid_owned, e);
+                    error!("connection {:?} error: {:?}", src_scion_socket, e);
                 }
-                connections_clone.lock().await.remove(&scid_owned);
+                connections_clone.lock().await.remove(&src_scion_socket);
             });
-        } else {
-            debug!(
-                "packet for unknown connection with dcid {:?} and src {:?}",
-                hdr.dcid, src_scion_socket
-            );
         }
         Ok(())
     }

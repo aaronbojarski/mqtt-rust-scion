@@ -29,9 +29,24 @@ mkdir -p emqx && tar -zxvf emqx-enterprise-6.1.0-ubuntu24.04-amd64.tar.gz -C emq
 sudo ip netns exec server_ns ~/emqx/bin/emqx foreground
 ```
 
+To enable quic support in emqx, add the following lines to the `emqx/etc/emqx.conf` file before starting the broker. The key and cert files can be copied from the proxy certificates generated earlier.
+```
+listeners.quic.default {
+  enabled = true
+  bind = "0.0.0.0:14567"
+  keyfile = "${EMQX_ETC_DIR}/certs/key.pem"
+  certfile = "${EMQX_ETC_DIR}/certs/cert.pem"
+}
+```
+
 Then start the proxy in the corresponding namespace.
 ```bash
 sudo ip netns exec server_ns ./target/release/mqtt-rust-scion proxy --listen [2-3,10.0.200.10]:4433 --ca-cert ./testnet/ca-cert.pem --cert ./testnet/proxy-cert.pem --key ./testnet/proxy-key.pem --endhost-api http://10.0.200.20:10231 --mode QuicEndpoint --mqtt-broker 127.0.0.1:1883
+```
+
+The proxy can also be started in UdpEndpoint mode. In this mode the QUIC connection is established between the client and the broker through the proxy. The proxy is just translating between SCION UDP packets and regular UDP packets.
+```bash
+sudo ip netns exec server_ns ./target/release/mqtt-rust-scion proxy --listen [2-3,10.0.200.10]:4433 --ca-cert ./testnet/ca-cert.pem --cert ./testnet/proxy-cert.pem --key ./testnet/proxy-key.pem --endhost-api http://10.0.200.20:10231 --mode UdpEndpoint --mqtt-broker 127.0.0.1:14567 --log debug
 ```
 
 Then start the client in another terminal.
