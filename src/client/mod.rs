@@ -8,8 +8,7 @@ use scion_proto::path::policy::acl::AclPolicy;
 use scion_stack::scionstack::ScionStackBuilder;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::net::quic::MAX_DATAGRAM_SIZE;
-use crate::net::quic::{DEFAULT_TIMEOUT, KEEPALIVE_INTERVAL};
+use crate::net::quic::{DEFAULT_TIMEOUT, KEEPALIVE_INTERVAL, MAX_DATAGRAM_SIZE};
 
 const PUBLISH_INTERVAL: u64 = 5000; // in milliseconds
 

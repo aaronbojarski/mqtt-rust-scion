@@ -415,8 +415,7 @@ impl Proxy {
     ) -> Result<()> {
         let mut client_conn_sender = {
             let new_connections_lock = self.udp_connections.lock().await;
-            let connection_info = new_connections_lock.get(&src_scion_socket).cloned();
-            connection_info
+            new_connections_lock.get(&src_scion_socket).cloned()
         };
 
         if let Some(client_conn) = client_conn_sender.as_mut() {

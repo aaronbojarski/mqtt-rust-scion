@@ -3,7 +3,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::net::{UdpPacket, quic::MAX_DATAGRAM_SIZE};
+use crate::net::UdpPacket;
+use crate::net::quic::MAX_DATAGRAM_SIZE;
 
 const TIMEOUT: u64 = 60000; // in milliseconds
 
