@@ -68,7 +68,7 @@ struct ProxyOpt {
 
 #[derive(Args, Debug)]
 struct ClientOpt {
-    /// Address of proxy to connect to (e.g. [0-0,proxy.example.com]:4433)
+    /// Address of proxy to connect to (e.g. [1-2,3.4.5.6]:4433)
     remote: scion_proto::address::SocketAddr,
 
     /// Hostname used for certificate verification
@@ -159,7 +159,7 @@ async fn run_client(opt: ClientOpt) -> Result<(), anyhow::Error> {
         cert_path: opt.cert_path,
         key_path: opt.key_path,
     };
-    let client = mqtt_rust_scion::client::Client::new(config);
+    let mut client = mqtt_rust_scion::client::Client::new(config);
     client.run().await?;
     Ok(())
 }

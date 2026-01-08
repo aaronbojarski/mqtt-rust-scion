@@ -6,4 +6,5 @@ The client is a regular MQTT client that can connect to MQTT brokers over the SC
 For the MQTT protocol implementation, this project uses the [mqtt-protocol-core](https://crates.io/crates/mqtt-protocol-core) crate. For transport security we use QUIC via the [quiche](https://crates.io/crates/quiche) crate. SCION networking is provided by the [scion-sdk](https://crates.io/crates/scion-sdk) crate.
 
 ## TODO:
+- Fix connection tear down on the proxy side
 - Make client code a library that can be used by other applications
