@@ -10,15 +10,15 @@ For the MQTT protocol implementation, this project uses the [mqtt-protocol-core]
 The client provides basic MQTT functionality, including connecting to a broker, publishing messages, and subscribing to topics. It supports MQTT v5.0 and uses QUIC over SCION for transport. It is built as a library that can be integrated into other Rust applications. At the moment, it has simple, but limited API.
 
 ```rust
-let client_config = ClientConfig {
+let client_config = mqtt_rust_scion::client::ClientConfig {
     ...
 };
 let mut client = mqtt_rust_scion::client::Client::new(client_config);
 client.connect("PROXY_SCION_ADDRESS").await?;
 
-client.publish("test/topic", b"Hello, SCION MQTT!".to_vec()).await?;
+client.publish("topic1", b"Hello, MQTT over SCION!".to_vec()).await?;
 
-client.subscribe("test/topic").await?;
+client.subscribe("topic2").await?;
 let message = client.rcv().await?;
 ```
 
@@ -32,6 +32,7 @@ The proxy is implemented as a standalone application. Its usage can be seen in t
 The proxy can be started in two different modes:
 - QuicEndpoint: In this mode, the the proxy is the QUIC endpoint that terminates the QUIC connection from the client. The proxy then establishes a separate (TCP) connection to the MQTT broker.
 - UdpEndpoint: In this mode, the proxy forwards UDP packets between the client and the broker. The QUIC connection is established between the client and the broker through the proxy. The proxy translates between UDP/SCION packets and UDP/IP packets.
+
 
 ## Test Network Setup
 A test network setup is provided in the `testnet` directory. It uses network namespaces and pocketscion for a local SCION network. It includes a client, proxy, and MQTT broker.
