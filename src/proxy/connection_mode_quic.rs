@@ -250,7 +250,7 @@ impl Connection {
             for stream_id in self.conn.readable() {
                 // Stream is readable, read until there's no more data.
                 while let Ok((read, _)) = self.conn.stream_recv(stream_id, &mut buf) {
-                    println!("Got {} bytes on stream {}", read, stream_id);
+                    trace!("Got {} bytes on stream {}", read, stream_id);
 
                     if stream_id == 0 {
                         // Handle data on stream 0 (TCP stream)

@@ -81,7 +81,7 @@ struct ClientOpt {
 
     /// Address of the endhost API to connect to for scion path resolution. Required when using SCION.
     #[clap(long = "endhost-api")]
-    endhost_api_address: Option<Url>,
+    endhost_api_address: Url,
 
     /// Path to the Snap token file for authentication with the endhost API
     #[clap(long = "snap-token", value_name = "FILE")]
@@ -103,9 +103,37 @@ struct ClientOpt {
     #[clap(long = "key", value_name = "FILE", default_value = "client-key.pem")]
     key_path: PathBuf,
 
+    /// Client identifier
+    #[clap(long = "client-id", default_value = "mqtt-rust-scion-client")]
+    client_id: String,
+
     /// Tracing level (trace, debug, info, warn, error)
     #[clap(long = "log", default_value = "info")]
     log_level: tracing::Level,
+
+    #[clap(subcommand)]
+    command: ClientCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ClientCommand {
+    Publish(PublishOpt),
+    Subscribe(SubscribeOpt),
+}
+
+#[derive(Args, Debug)]
+struct PublishOpt {
+    /// Topic to publish to
+    topic: String,
+
+    /// Payload to publish
+    payload: String,
+}
+
+#[derive(Args, Debug)]
+struct SubscribeOpt {
+    /// Topic to subscribe to
+    topic: String,
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -150,7 +178,6 @@ async fn run_client(opt: ClientOpt) -> Result<(), anyhow::Error> {
         .map_err(|err| anyhow!("failed to init tracing: {err}"))?;
     let config = mqtt_rust_scion::client::ClientConfig {
         bind: opt.bind,
-        remote: opt.remote,
         host: opt.host,
         endhost_api_address: opt.endhost_api_address,
         snap_token_path: opt.snap_token_path,
@@ -158,8 +185,33 @@ async fn run_client(opt: ClientOpt) -> Result<(), anyhow::Error> {
         ca_cert_path: opt.ca_cert_path,
         cert_path: opt.cert_path,
         key_path: opt.key_path,
+        client_id: opt.client_id,
     };
+
     let mut client = mqtt_rust_scion::client::Client::new(config);
-    client.run().await?;
+    client.connect(opt.remote).await?;
+
+    match opt.command {
+        ClientCommand::Publish(publish_opt) => {
+            client
+                .publish(&publish_opt.topic, publish_opt.payload.as_bytes().to_vec())
+                .await?;
+            tracing::info!("Published message to topic '{}'", publish_opt.topic);
+        }
+        ClientCommand::Subscribe(subscribe_opt) => {
+            client.subscribe(&subscribe_opt.topic).await?;
+            tracing::info!(
+                "Subscribed to topic '{}'. Waiting for messages...",
+                subscribe_opt.topic
+            );
+            while let Some(message) = client.rcv().await.ok() {
+                tracing::info!(
+                    "Received message: {:?} for topic '{}'",
+                    String::from_utf8_lossy(&message.payload),
+                    message.topic
+                );
+            }
+        }
+    }
     Ok(())
 }
