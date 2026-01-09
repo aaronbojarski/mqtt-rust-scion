@@ -39,6 +39,11 @@ listeners.quic.default {
 }
 ```
 
+Client and proxy binaries can be built with cargo.
+```bash
+cargo build --release
+```
+
 Then start the proxy in the corresponding namespace.
 ```bash
 sudo ip netns exec server_ns ./target/release/mqtt-rust-scion proxy --listen [2-3,10.0.200.10]:4433 --ca-cert ./testnet/ca-cert.pem --cert ./testnet/proxy-cert.pem --key ./testnet/proxy-key.pem --endhost-api http://10.0.200.20:10231 --mode QuicEndpoint --mqtt-broker 127.0.0.1:1883
@@ -49,9 +54,14 @@ The proxy can also be started in UdpEndpoint mode. In this mode the QUIC connect
 sudo ip netns exec server_ns ./target/release/mqtt-rust-scion proxy --listen [2-3,10.0.200.10]:4433 --ca-cert ./testnet/ca-cert.pem --cert ./testnet/proxy-cert.pem --key ./testnet/proxy-key.pem --endhost-api http://10.0.200.20:10231 --mode UdpEndpoint --mqtt-broker 127.0.0.1:14567 --log debug
 ```
 
-Then start the client in another terminal.
+Then start the subscribing client in another terminal.
 ```bash
-sudo ip netns exec client_ns ./target/release/mqtt-rust-scion client [2-3,10.0.200.10]:4433 --host localhost --ca-cert ./testnet/ca-cert.pem --cert ./testnet/client-cert.pem --key ./testnet/client-key.pem --endhost-api http://10.0.100.20:10143 --snap-token ./testnet/snap.token
+sudo ip netns exec client_ns ./target/release/mqtt-rust-scion client [2-3,10.0.200.10]:4433 --host localhost --ca-cert ./testnet/ca-cert.pem --cert ./testnet/client-cert.pem --key ./testnet/client-key.pem --endhost-api http://10.0.100.20:10143 --snap-token ./testnet/snap.token --client-id client1 subscribe test
+```
+
+Then start the publishing client in another terminal.
+```bash
+sudo ip netns exec client_ns ./target/release/mqtt-rust-scion client [2-3,10.0.200.10]:4433 --host localhost --ca-cert ./testnet/ca-cert.pem --cert ./testnet/client-cert.pem --key ./testnet/client-key.pem --endhost-api http://10.0.100.20:10143 --snap-token ./testnet/snap.token --client-id hallo publish test 12345
 ```
 
 Finally, the test network can be torn down.

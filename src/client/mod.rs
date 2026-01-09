@@ -138,11 +138,12 @@ impl Client {
 
     pub async fn rcv(&mut self) -> Result<MqttMessage> {
         // Implementation of the rcv method
-        if let Some(ref mut stream) = self.message_stream {
-            if let Some(packet) = stream.recv().await {
-                return Ok(packet);
-            }
+        if let Some(ref mut stream) = self.message_stream
+            && let Some(packet) = stream.recv().await
+        {
+            return Ok(packet);
         }
+
         Err(anyhow!("No message stream available"))
     }
 }

@@ -204,7 +204,7 @@ async fn run_client(opt: ClientOpt) -> Result<(), anyhow::Error> {
                 "Subscribed to topic '{}'. Waiting for messages...",
                 subscribe_opt.topic
             );
-            while let Some(message) = client.rcv().await.ok() {
+            while let Ok(message) = client.rcv().await {
                 tracing::info!(
                     "Received message: {:?} for topic '{}'",
                     String::from_utf8_lossy(&message.payload),
