@@ -307,13 +307,14 @@ impl Connection {
                 // Process requests from client
                 Some((request, notify)) = self.request_receiver.recv() => {
                     match request {
-                        Request::Subscribe { topic } => {
+                        Request::Subscribe { ref topic } => {
                             // Build SUBSCRIBE packet
                             let sub_opts = mqtt::packet::SubOpts::new().set_qos(mqtt::packet::Qos::AtLeastOnce);
                             let sub_entry = mqtt::packet::SubEntry::new(topic.clone(), sub_opts).unwrap();
+                            let packet_id = self.mqtt_conn.acquire_packet_id()
+                                .map_err(|_| anyhow!("no packet ID available for SUBSCRIBE packet"))?;
                             let subscribe_packet = mqtt::packet::v5_0::Subscribe::builder()
-                                .packet_id(self.mqtt_conn.acquire_packet_id()
-                                    .map_err(|_| anyhow!("no packet ID available for SUBSCRIBE packet"))?)
+                                .packet_id(packet_id)
                                 .entries(vec![sub_entry])
                                 .build()
                                 .map_err(|e| anyhow!("failed to build SUBSCRIBE packet: {}", e))?;
@@ -322,13 +323,16 @@ impl Connection {
                             self.handle_events(events)
                                 .map_err(|e| anyhow!("failed to handle events: {}", e))?;
                             debug!("sent SUBSCRIBE packet for topic '{}' on stream {}", topic, 0);
+
+                            // Store the request to wait for SUBACK
+                            self.current_request = Some((request, packet_id, notify));
                         }
-                        Request::Publish { message } => {
+                        Request::Publish { ref message } => {
                             // Build PUBLISH packet
                             let mut publish_builder = mqtt::packet::v5_0::Publish::builder()
                                 .topic_name(&message.topic)
                                 .unwrap()
-                                .payload(message.payload)
+                                .payload(message.payload.clone())
                                 .qos(message.qos);
                             let packet_id = self.mqtt_conn.acquire_packet_id()
                                 .map_err(|_| anyhow!("no packet ID available for PUBLISH packet"))?;
@@ -340,9 +344,11 @@ impl Connection {
                             self.handle_events(events)
                                 .map_err(|e| anyhow!("failed to handle events: {}", e))?;
                             debug!("sent PUBLISH packet for topic '{}' on stream {}", message.topic, 0);
+
+                            // Store the request to wait for PUBACK/PUBREC
+                            self.current_request = Some((request, packet_id, notify));
                         }
                     }
-                    notify.notify_one();
                 }
             }
 

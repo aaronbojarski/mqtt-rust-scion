@@ -3,6 +3,10 @@ name = "mqtt-rust-scion"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "mqtt_rust_scion"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4", features = ["derive"] }
@@ -16,3 +20,9 @@ tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.0", default-features = false, features = ["env-filter", "fmt", "ansi", "time", "local-time"] }
 url = "2.5.7"
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+pyo3-asyncio = { version = "0.20", features = ["tokio-runtime"], optional = true }
+
+[features]
+default = []
+python-bindings = ["pyo3", "pyo3-asyncio"]

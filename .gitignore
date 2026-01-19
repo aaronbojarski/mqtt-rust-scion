@@ -36,3 +36,6 @@ target
 
 # pocketscion configurator
 pocketscion-configurator*
+
+# python virtual environment
+/venv

@@ -36,3 +36,7 @@ The proxy can be started in two different modes:
 
 ## Test Network Setup
 A test network setup is provided in the `testnet` directory. It uses network namespaces and pocketscion for a local SCION network. It includes a client, proxy, and MQTT broker.
+
+
+## Python Bindings
+Python bindings for the MQTT client are provided via PyO3. The bindings expose the core functionality of the Rust client library to Python applications. See the [PYTHON_BINDINGS.md](docs/PYTHON_BINDINGS.md) and [PYTHON_QUICKSTART.md](docs/PYTHON_QUICKSTART.md) for more information.
