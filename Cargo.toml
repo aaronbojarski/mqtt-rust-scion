@@ -13,8 +13,8 @@ clap = { version = "4", features = ["derive"] }
 mqtt-protocol-core = "0.7.5"
 quiche = "0.24.6"
 ring = "0.17.14"
-scion-proto = { git = "https://github.com/Anapaya/scion-sdk.git", rev = "4ff09c1b1621570d1f25af149f390addf15a2de6" }
-scion-stack = { git = "https://github.com/Anapaya/scion-sdk.git", rev = "4ff09c1b1621570d1f25af149f390addf15a2de6" }
+scion-proto = "0.4.0"
+scion-stack = "0.4.0"
 tokio = { version = "1.28.1", features = ["full"] }
 tokio-util = "0.7.16"
 tracing = "0.1.41"
